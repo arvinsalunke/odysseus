@@ -88,26 +88,22 @@ services:
     restart: unless-stopped
 
   searxng:
-    # Pinned, not :latest — odysseus waits on searxng's healthcheck
-    # (depends_on: condition: service_healthy), so a broken upstream `latest`
-    # tag blocks the whole app from starting. 2026.6.2 crashes on boot with
-    # `KeyError: 'default_doi_resolver'`, failing the healthcheck (issue #1414).
-    # Bump this deliberately after verifying a newer tag boots clean.
-    image: docker.io/searxng/searxng:2026.5.31-7159b8aed
+    image: 'docker.io/searxng/searxng:2026.5.31-7159b8aed'
+    entrypoint:
+      - /bin/sh
+      - '-c'
+      - |
+        mkdir -p /etc/searxng
+        if [ ! -f /etc/searxng/settings.yml ]; then
+          echo "use_default_settings: true" > /etc/searxng/settings.yml
+          echo "server:" >> /etc/searxng/settings.yml
+          echo "  secret_key: 'z49vBhN6XWZkWL8dfY6qq0taOwC78pWfLo9s58wL0chr2sbq'" >> /etc/searxng/settings.yml
+        fi
+        exec /usr/local/searxng/entrypoint.sh
     ports:
-      - "127.0.0.1:8888:8080"
+      - '127.0.0.1:8888:8080'
     volumes:
-      - searxng-data:/etc/searxng
-    environment:
-      - SEARXNG_BASE_URL=http://localhost:8080/
-      - SEARXNG_SECRET=z49vBhN6XWZkWL8dfY6qq0taOwC78pWfLo9s58wL0chr2sbq
-    # The official searxng image runs as the non-root `searxng` user, but its
-    # entrypoint still needs to chown /etc/searxng on first boot, drop privs via
-    # su-exec, and (with our wrapper above) write settings.yml into the named
-    # volume. Without these capabilities the wrapper aborts at the redirection
-    # with EACCES and the container fails its healthcheck with permission
-    # errors during setup. Mirrors the cap set recommended by the upstream
-    # searxng-docker compose file. See issue #721.
+      - 'searxng-data:/etc/searxng'
     cap_drop:
       - ALL
     cap_add:
@@ -118,10 +114,10 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - 'curl -f http://localhost:8080/ || exit 1'
-      interval: 5s
-      timeout: 6s
-      retries: 20
+        - 'wget -qO- http://localhost:8080/healthz || exit 1'
+      interval: 10s
+      timeout: 5s
+      retries: 5
       start_period: 10s
     restart: unless-stopped
 
