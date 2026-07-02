@@ -28,7 +28,7 @@ services:
       - RESEARCH_LLM_ENDPOINT=${RESEARCH_LLM_ENDPOINT:-}
       - HF_TOKEN=${HF_TOKEN:-}
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
-      - SEARXNG_INSTANCE=http://searxng:8888
+      - SEARXNG_INSTANCE=http://searxng:8080
       - CHROMADB_HOST=chromadb
       - CHROMADB_PORT=8000
       - DATABASE_URL=${DATABASE_URL:-sqlite:///./data/app.db}
@@ -88,22 +88,40 @@ services:
     restart: unless-stopped
 
   searxng:
-    image: 'docker.io/searxng/searxng:2026.5.31-7159b8aed'
+    # Pinned, not :latest — odysseus waits on searxng's healthcheck
+    # (depends_on: condition: service_healthy), so a broken upstream `latest`
+    # tag blocks the whole app from starting. 2026.6.2 crashes on boot with
+    # `KeyError: 'default_doi_resolver'`, failing the healthcheck (issue #1414).
+    # Bump this deliberately after verifying a newer tag boots clean.
+    image: docker.io/searxng/searxng:2026.5.31-7159b8aed
     entrypoint:
       - /bin/sh
-      - '-c'
+      - -c
       - |
-        mkdir -p /etc/searxng
-        if [ ! -f /etc/searxng/settings.yml ]; then
-          echo "use_default_settings: true" > /etc/searxng/settings.yml
-          echo "server:" >> /etc/searxng/settings.yml
-          echo "  secret_key: 'z49vBhN6XWZkWL8dfY6qq0taOwC78pWfLo9s58wL0chr2sbq'" >> /etc/searxng/settings.yml
+        set -eu
+        if [ ! -s /etc/searxng/settings.yml ] || grep -q 'odysseus-local-searxng-json-2026-05-30\|__SEARXNG_SECRET__' /etc/searxng/settings.yml; then
+          secret="$${SEARXNG_SECRET:-}"
+          if [ -z "$$secret" ]; then
+            secret="$$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          fi
+          sed "s|__SEARXNG_SECRET__|$$secret|g" /tmp/searxng-settings.yml.template > /etc/searxng/settings.yml
         fi
         exec /usr/local/searxng/entrypoint.sh
     ports:
-      - '127.0.0.1:8888:8080'
+      - "${SEARXNG_BIND:-127.0.0.1}:${SEARXNG_PORT:-8888}:8080"
     volumes:
-      - 'searxng-data:/etc/searxng'
+      - searxng-data:/etc/searxng
+      - ./config/searxng/settings.yml:/tmp/searxng-settings.yml.template:ro,z
+    environment:
+      - SEARXNG_BASE_URL=http://${SEARXNG_BIND:-localhost}:${SEARXNG_PORT:-8888}/
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-}
+    # The official searxng image runs as the non-root `searxng` user, but its
+    # entrypoint still needs to chown /etc/searxng on first boot, drop privs via
+    # su-exec, and (with our wrapper above) write settings.yml into the named
+    # volume. Without these capabilities the wrapper aborts at the redirection
+    # with EACCES and the container fails its healthcheck with permission
+    # errors during setup. Mirrors the cap set recommended by the upstream
+    # searxng-docker compose file. See issue #721.
     cap_drop:
       - ALL
     cap_add:
@@ -112,12 +130,10 @@ services:
       - SETUID
       - DAC_OVERRIDE
     healthcheck:
-      test:
-        - CMD-SHELL
-        - 'wget -qO- http://localhost:8080/healthz || exit 1'
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/', timeout=5).read(1)\""]
+      interval: 5s
+      timeout: 6s
+      retries: 20
       start_period: 10s
     restart: unless-stopped
 
