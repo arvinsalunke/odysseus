@@ -4,6 +4,7 @@ server:
   secret_key: "__SEARXNG_SECRET__"
 
 search:
+  default_doi_resolver: "oadoi.org"
   formats:
     - html
     - json
